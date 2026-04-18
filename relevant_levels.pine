@@ -1,0 +1,160 @@
+//@version=5
+indicator("Relevant Levels", overlay=true)
+
+// --- Inputs ---
+colorHigh = input.color(color.red, title="High Color")
+colorLow = input.color(color.green, title="Low Color")
+colorDayOpen = input.color(color.blue, title="Day Open Color")
+colorWeekOpen = input.color(color.orange, title="Week Open Color")
+colorMonthOpen = input.color(color.purple, title="Month Open Color")
+
+showPDH = input(true, title="Show Previous Day High")
+showPDL = input(true, title="Show Previous Day Low")
+showPWH = input(true, title="Show Previous Week High")
+showPWL = input(true, title="Show Previous Week Low")
+showDO  = input(true, title="Show Daily Open")
+showWO  = input(true, title="Show Weekly Open")
+showMO  = input(true, title="Show Monthly Open")
+
+lineOffsetBars = input.int(3, title="Line Offset (Bars)", minval=1)
+lineLengthBars = input.int(4, title="Line Length (Bars)", minval=1)
+gapBetween     = input.int(2, title="Gap Between Overlaps", minval=0)
+showTrace      = input(true, title="Show Trace Lines")
+
+// --- State Variables for Tracking Exact Times ---
+var float dHigh = 0.0, var int dHighTime = 0
+var float dLow  = 10000000.0, var int dLowTime  = 0
+var float wHigh = 0.0, var int wHighTime = 0
+var float wLow  = 10000000.0, var int wLowTime  = 0
+
+// Variables to store the FINAL values of the previous period
+var float pDayHigh = na, var int pDayHighTime = na
+var float pDayLow  = na, var int pDayLowTime  = na
+var float pWeekHigh = na, var int pWeekHighTime = na
+var float pWeekLow  = na, var int pWeekLowTime  = na
+
+// --- Detect New Periods ---
+bool newDay   = ta.change(time("D"))
+bool newWeek  = ta.change(time("W"))
+bool newMonth = ta.change(time("M"))
+
+// --- Logic: Track Highs and Lows in real-time ---
+
+// 1. Daily Tracking
+if newDay
+    // Save current tracker to "Previous" variables before resetting
+    pDayHigh := dHigh
+    pDayHighTime := dHighTime
+    pDayLow := dLow
+    pDayLowTime := dLowTime
+    
+    // Reset trackers for the new day
+    dHigh := high
+    dHighTime := time
+    dLow := low
+    dLowTime := time
+else
+    // Update if we find a new high/low within the day
+    if high > dHigh
+        dHigh := high
+        dHighTime := time
+    if low < dLow
+        dLow := low
+        dLowTime := time
+
+// 2. Weekly Tracking
+if newWeek
+    pWeekHigh := wHigh
+    pWeekHighTime := wHighTime
+    pWeekLow := wLow
+    pWeekLowTime := wLowTime
+    
+    wHigh := high
+    wHighTime := time
+    wLow := low
+    wLowTime := time
+else
+    if high > wHigh
+        wHigh := high
+        wHighTime := time
+    if low < wLow
+        wLow := low
+        wLowTime := time
+
+// --- Opens ---
+dayOpen      = request.security(syminfo.tickerid, "D", open, lookahead=barmerge.lookahead_on)
+dayOpenTime  = time("D")
+
+weekOpen     = request.security(syminfo.tickerid, "W", open, lookahead=barmerge.lookahead_on)
+weekOpenTime = time("W")
+
+monthOpen    = request.security(syminfo.tickerid, "M", open, lookahead=barmerge.lookahead_on)
+monthOpenTime= time("M")
+
+
+// --- Drawing Logic ---
+
+// Map to handle overlaps
+var overlapMap = map.new<float, int>()
+map.clear(overlapMap)
+
+// Helper to calculate time-based coordinates
+f_get_time_coords(_price) =>
+    int _count = map.get(overlapMap, _price)
+    if na(_count)
+        _count := 0
+    map.put(overlapMap, _price, _count + 1)
+    
+    // Calculate total bars to shift: Offset + (Count * (Length + Gap))
+    int _totalShiftBars = lineOffsetBars + (_count * (lineLengthBars + gapBetween))
+    
+    // Convert Bars to Time based on current timeframe
+    int _barTime = time - time[1]
+    int _t1 = time + (_totalShiftBars * _barTime)
+    int _t2 = _t1 + (lineLengthBars * _barTime)
+    [_t1, _t2]
+
+// --- Cleanup Old Objects ---
+var line[] lines = array.new_line()
+var label[] labels = array.new_label()
+
+// Clear previous frame on the last bar update
+if barstate.islast
+    if array.size(lines) > 0
+        for i = 0 to array.size(lines) - 1
+            line.delete(array.get(lines, i))
+        array.clear(lines)
+    if array.size(labels) > 0
+        for i = 0 to array.size(labels) - 1
+            label.delete(array.get(labels, i))
+        array.clear(labels)
+
+// Wrapper to push objects to array for auto-cleanup
+f_draw_managed(_price, _originTime, _color, _text) =>
+    if not na(_price) and _price != 0 and _originTime > 0
+        [t1, t2] = f_get_time_coords(_price)
+        
+        if showTrace
+            // CHANGED: Color is now Gray with 50% transparency (darker than before)
+            array.push(lines, line.new(x1=_originTime, y1=_price, x2=t1, y2=_price, xloc=xloc.bar_time, color=color.new(color.gray, 50), style=line.style_dotted, width=1))
+        
+        array.push(lines, line.new(x1=t1, y1=_price, x2=t2, y2=_price, xloc=xloc.bar_time, color=_color, width=1))
+        array.push(labels, label.new(x=t2, y=_price, text=_text, xloc=xloc.bar_time, style=label.style_none, textcolor=_color, size=size.small, textalign=text.align_left))
+
+// --- Execute Drawing ---
+// Only draw on the very last bar to save resources
+if barstate.islast
+    if showPDH 
+        f_draw_managed(pDayHigh, pDayHighTime, colorHigh, "PDH")
+    if showPDL 
+        f_draw_managed(pDayLow, pDayLowTime, colorLow, "PDL")
+    if showPWH 
+        f_draw_managed(pWeekHigh, pWeekHighTime, colorHigh, "PWH")
+    if showPWL 
+        f_draw_managed(pWeekLow, pWeekLowTime, colorLow, "PWL")
+    if showDO 
+        f_draw_managed(dayOpen, dayOpenTime, colorDayOpen, "D")
+    if showWO 
+        f_draw_managed(weekOpen, weekOpenTime, colorWeekOpen, "W")
+    if showMO 
+        f_draw_managed(monthOpen, monthOpenTime, colorMonthOpen, "M")
